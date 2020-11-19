@@ -27,45 +27,16 @@ namespace DevOpcua {
 class RecordConnector;
 
 /**
- * @brief The DataElement interface for a single piece of data.
- *
- * A data element can either be the top level data of an item (in that case
- * its name is an empty string) or be an element of a structured data type (in
- * that case name is the data element name).
- *
- * Inside a structure, a data element can either be a leaf, i.e. be of one of the
- * builtin types and connected to a record (through the pconnector member) or be
- * a node of a structured data type and contain a list of its child elements.
+ * @brief The DataElement EPICS side interface for a single piece of data.
  *
  * As resource conflicts can only occur in nodes that are accessed by records
- * (database side) and items (OPC UA side), the RecordConnector lock must be held
+ * (EPICS side) and items (OPC UA side), the RecordConnector lock must be held
  * when operating on a data element.
  */
 class DataElement
 {
 public:
     virtual ~DataElement() {}
-
-    /**
-     * @brief "Factory" method to construct a linked list of data elements between a record connector and an item.
-     *
-     * Creates the leaf element first, then identifies the part of the path that already exists
-     * on the item and creates the missing list of linked nodes.
-     *
-     * @param pitem       pointer to corresponding Item
-     * @param pconnector  pointer to record connector to link to
-     * @param path        path of leaf element inside the structure
-     */
-    static void addElementToTree(Item *item,
-                                 RecordConnector *pconnector,
-                                 const std::string &path);
-
-    /**
-     * @brief Get the type of element (inside a structure).
-     *
-     * @return true if element is a leaf (has no child elements)
-     */
-    bool isLeaf() const { return isleaf; }
 
     /**
      * @brief Setter to create a (bidirectional) link to a RecordConnector.
@@ -78,17 +49,6 @@ public:
      * @param connector  pointer to the RecordConnector to link to
      */
     void setRecordConnector(RecordConnector *connector);
-
-    /**
-     * @brief Print configuration and status on stdout.
-     *
-     * The verbosity level controls the amount of information:
-     * 0 = one line
-     *
-     * @param level   verbosity level
-     * @param indent  indentation level
-     */
-    virtual void show(const int level, const unsigned int indent) const = 0;
 
     /**
      * @brief Read incoming data as a scalar epicsInt32.
@@ -794,36 +754,20 @@ public:
      */
     virtual void requestRecordProcessing(const ProcessReason reason) const = 0;
 
-    const std::string name;                     /**< element name */
     //TODO: make separator configurable
     static const char separator = '.';
 
 protected:
     /**
-     * @brief Constructor for node DataElement, to be used by implementations.
+     * @brief Constructor for use by derived Leaf DataElement.
      *
-     * @param name  structure element name (empty otherwise)
+     * @param connector  record connector to link to
      */
-    DataElement(const std::string &name = "")
-        : name(name)
-        , pconnector(nullptr)
-        , isleaf(false)
+    DataElement(RecordConnector *connector)
+        : pconnector(connector)
     {}
 
-    /**
-     * @brief Constructor for leaf DataElement, to be used by implementations.
-     *
-     * @param name  structure element name (empty otherwise)
-     * @param connector
-     */
-    DataElement(RecordConnector *pconnector, const std::string &name = "")
-        : name(name)
-        , pconnector(pconnector)
-        , isleaf(true)
-    {}
-
-    RecordConnector *pconnector;                /**< pointer to connector (if leaf) */
-    const bool isleaf;                          /**< flag for leaf property */
+    RecordConnector *pconnector;                /**< pointer to record connector */
 };
 
 } // namespace DevOpcua

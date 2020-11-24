@@ -172,7 +172,7 @@ ItemUaSdk::setIncomingData(const OpcUa_DataValue &value, ProcessReason reason)
     setLastStatus(value.StatusCode);
 
     if (auto pd = rootElement.lock())
-        pd->setIncomingData(value.Value, reason);
+        pd->setIncomingEvent(reason, value.Value);
 
     if (linkinfo.isItemRecord) {
         if (state() == ConnectionStatus::initialRead

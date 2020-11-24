@@ -23,7 +23,7 @@ opcua_SRCS += SessionUaSdk.cpp
 opcua_SRCS += Subscription.cpp
 opcua_SRCS += SubscriptionUaSdk.cpp
 opcua_SRCS += ItemUaSdk.cpp
-opcua_SRCS += DataElementUaSdk.cpp
+opcua_SRCS += DataElementLeaf.cpp
 opcua_SRCS += iocshIntegrationUaSdk.cpp
 
 DBD_INSTALLS += opcuaUaSdk.dbd

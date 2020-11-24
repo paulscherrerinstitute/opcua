@@ -28,379 +28,84 @@
 #include <alarm.h>
 
 #include "ItemUaSdk.h"
-#include "DataElementUaSdk.h"
+#include "DataElementLeaf.h"
 #include "UpdateQueue.h"
 #include "RecordConnector.h"
 
 namespace DevOpcua {
 
-/* Specific implementation of DataElement's "factory" method */
-void
-DataElement::addElementToTree (Item *item,
-                               RecordConnector *pconnector,
-                               const std::string &fullpath)
-{
-    DataElementUaSdk::addElementToTree(static_cast<ItemUaSdk*>(item), pconnector, fullpath);
-}
-
-DataElementUaSdk::DataElementUaSdk (const std::string &name,
-                                    ItemUaSdk *item,
-                                    RecordConnector *pconnector)
-    : DataElement(pconnector, name)
-    , pitem(item)
-    , mapped(false)
-    , incomingQueue(pconnector->plinkinfo->clientQueueSize, pconnector->plinkinfo->discardOldest)
-    , isdirty(false)
+DataElementLeaf::DataElementLeaf (const std::string &nname,
+                                  ItemUaSdk *pitem,
+                                  RecordConnector *connector)
+    : DataElementUaSdk(nname, pitem)
+    , DataElement(connector)
+    , incomingQueue(connector->plinkinfo->clientQueueSize, connector->plinkinfo->discardOldest)
 {}
 
-DataElementUaSdk::DataElementUaSdk (const std::string &name,
-                                    ItemUaSdk *item,
-                                    std::weak_ptr<DataElementUaSdk> child)
-    : DataElement(name)
-    , pitem(item)
-    , mapped(false)
-    , incomingQueue(0ul)
-    , isdirty(false)
-{
-    elements.push_back(child);
-}
-
 void
-DataElementUaSdk::show (const int level, const unsigned int indent) const
+DataElementLeaf::show (const int level, const unsigned int indent) const
 {
     std::string ind(indent*2, ' ');
-    std::cout << ind;
-    if (isLeaf()) {
-        std::cout << "leaf=" << name << " record(" << pconnector->getRecordType() << ")="
-                  << pconnector->getRecordName()
-                  << " type=" << variantTypeString(incomingData.type())
-                  << " timestamp=" << (pconnector->plinkinfo->useServerTimestamp ? "server" : "source")
-                  << " bini=" << linkOptionBiniString(pconnector->plinkinfo->bini)
-                  << " monitor=" << (pconnector->plinkinfo->monitor ? "y" : "n") << "\n";
-    } else {
-        std::cout << "node=" << name << " children=" << elements.size()
-                  << " mapped=" << (mapped ? "y" : "n") << "\n";
-        for (auto it : elements) {
-            if (auto pelem = it.lock()) {
-                pelem->show(level, indent + 1);
-            }
-        }
-    }
-}
-
-void
-DataElementUaSdk::addElementToTree (ItemUaSdk *item,
-                                    RecordConnector *pcon,
-                                    const std::string &fullpath)
-{
-    bool hasRootElement = true;
-    // Create final path element as leaf and link it to connector
-    std::string path(fullpath);
-    std::string restpath;
-    size_t sep = path.find_last_of(separator);
-    // allow escaping separators
-    while (path[sep-1] == '\\') {
-        path.erase(--sep, 1);
-        sep = path.find_last_of(separator, --sep);
-    }
-    std::string leafname = path.substr(sep + 1);
-    if (leafname.empty()) leafname = "[ROOT]";
-    if (sep != std::string::npos)
-        restpath = path.substr(0, sep);
-
-    auto chainelem = std::make_shared<DataElementUaSdk>(leafname, item, pcon);
-    pcon->setDataElement(chainelem);
-
-    // Starting from item...
-    std::weak_ptr<DataElementUaSdk> topelem = item->rootElement;
-
-    if (topelem.expired()) hasRootElement = false;
-
-    // Simple case (leaf is the root element)
-    if (leafname == "[ROOT]") {
-        if (hasRootElement) throw std::runtime_error(SB() << "root data element already set");
-        item->rootElement = chainelem;
-        return;
-    }
-
-    std::string name;
-    if (hasRootElement) {
-        // Find the existing part of the path
-        bool found;
-        do {
-            found = false;
-            sep = restpath.find_first_of(separator);
-            // allow escaping separators
-            while (restpath[sep-1] == '\\') {
-                restpath.erase(sep-1, 1);
-                sep = restpath.find_first_of(separator, sep);
-            }
-            if (sep == std::string::npos)
-                name = restpath;
-            else
-                name = restpath.substr(0, sep);
-
-            // Search for name in list of children
-            if (!name.empty()) {
-                if (auto pelem = topelem.lock()) {
-                    for (auto it : pelem->elements) {
-                        if (auto pit = it.lock()) {
-                            if (pit->name == name) {
-                                found = true;
-                                topelem = it;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if (found) {
-                if (sep == std::string::npos)
-                    restpath.clear();
-                else
-                    restpath = restpath.substr(sep + 1);
-            }
-        } while (found && !restpath.empty());
-    }
-    // At this point, topelem is the element to add the chain to
-    // (otherwise, a root element has to be added), and
-    // restpath is the remaining chain that has to be created
-
-    // Create remaining chain, bottom up
-    while (restpath.length()) {
-        sep = restpath.find_last_of(separator);
-        // allow escaping separators
-        while (restpath[sep-1] == '\\') {
-            restpath.erase(--sep, 1);
-            sep = restpath.find_last_of(separator, --sep);
-        }
-        name = restpath.substr(sep + 1);
-        if (sep != std::string::npos)
-            restpath = restpath.substr(0, sep);
-        else
-            restpath.clear();
-
-        chainelem->parent = std::make_shared<DataElementUaSdk>(name, item, chainelem);
-        chainelem = chainelem->parent;
-    }
-
-    // Add to topelem, or create rootelem and add it to item
-    if (hasRootElement) {
-        if (auto pelem = topelem.lock()) {
-            pelem->elements.push_back(chainelem);
-            chainelem->parent = pelem;
-        } else {
-            throw std::runtime_error(SB() << "previously found top element invalidated");
-        }
-    } else {
-        chainelem->parent = std::make_shared<DataElementUaSdk>("[ROOT]", item, chainelem);
-        chainelem = chainelem->parent;
-        item->rootElement = chainelem;
-    }
+    std::cout << ind
+              << "leaf=" << name << " record(" << pconnector->getRecordType() << ")="
+              << pconnector->getRecordName()
+              << " type=" << variantTypeString(incomingData.type())
+              << " timestamp=" << (pconnector->plinkinfo->useServerTimestamp ? "server" : "source")
+              << " bini=" << linkOptionBiniString(pconnector->plinkinfo->bini)
+              << " monitor=" << (pconnector->plinkinfo->monitor ? "y" : "n") << "\n";
 }
 
 // Getting the timestamp and status information from the Item assumes that only one thread
 // is pushing data into the Item's DataElement structure at any time.
 void
-DataElementUaSdk::setIncomingData (const UaVariant &value, ProcessReason reason)
+DataElementLeaf::setIncomingEvent (ProcessReason reason, const UaVariant &value)
 {
-    // Make a copy of this element and cache it
+    // Cache incoming data
     incomingData = value;
 
-    if (isLeaf()) {
-        if ((pitem->state() == ConnectionStatus::initialRead && reason == ProcessReason::readComplete) ||
-                (pitem->state() == ConnectionStatus::up)) {
-            Guard(pconnector->lock);
-            bool wasFirst = false;
-            // Make a copy of the value for this element and put it on the queue
-            UpdateUaSdk *u(new UpdateUaSdk(getIncomingTimeStamp(), reason, value, getIncomingReadStatus()));
-            incomingQueue.pushUpdate(std::shared_ptr<UpdateUaSdk>(u), &wasFirst);
-            if (debug() >= 5)
-                std::cout << "Element " << name << " set data ("
-                          << processReasonString(reason)
-                          << ") for record " << pconnector->getRecordName()
-                          << " (queue use " << incomingQueue.size()
-                          << "/" << incomingQueue.capacity() << ")" << std::endl;
-            if (wasFirst)
-                pconnector->requestRecordProcessing(reason);
-        }
-    } else {
-        if (debug() >= 5)
-            std::cout << "Element " << name << " splitting structured data to "
-                      << elements.size() << " child elements" << std::endl;
-
-        if (value.type() == OpcUaType_ExtensionObject) {
-            UaExtensionObject extensionObject;
-            value.toExtensionObject(extensionObject);
-
-            // Try to get the structure definition from the dictionary
-            UaStructureDefinition definition = pitem->structureDefinition(extensionObject.encodingTypeId());
-            if (!definition.isNull()) {
-                if (!definition.isUnion()) {
-                    // ExtensionObject is a structure
-                    // Decode the ExtensionObject to a UaGenericValue to provide access to the structure fields
-                    UaGenericStructureValue genericValue;
-                    genericValue.setGenericValue(extensionObject, definition);
-
-                    if (!mapped) {
-                        if (debug() >= 5)
-                            std::cout << " ** creating index-to-element map for child elements" << std::endl;
-                        for (auto &it : elements) {
-                            auto pelem = it.lock();
-                            for (int i = 0; i < definition.childrenCount(); i++) {
-                                if (pelem->name == definition.child(i).name().toUtf8()) {
-                                    elementMap.insert({i, it});
-                                    pelem->setIncomingData(genericValue.value(i), reason);
-                                }
-                            }
-                        }
-                        if (debug() >= 5)
-                            std::cout << " ** " << elementMap.size() << "/" << elements.size()
-                                      << " child elements mapped to a "
-                                      << "structure of " << definition.childrenCount() << " elements" << std::endl;
-                        mapped = true;
-                    } else {
-                        for (auto &it : elementMap) {
-                            auto pelem = it.second.lock();
-                            pelem->setIncomingData(genericValue.value(it.first), reason);
-                        }
-                    }
-                }
-
-            } else
-                errlogPrintf("Cannot get a structure definition for %s - check access to type dictionary\n",
-                             extensionObject.dataTypeId().toString().toUtf8());
-        }
-    }
-}
-
-void
-DataElementUaSdk::setIncomingEvent (ProcessReason reason)
-{
-    if (isLeaf()) {
+    // Ignore data updates during initial read -> wait for the readComplete
+    if ((item->state() == ConnectionStatus::initialRead && reason == ProcessReason::readComplete) ||
+            (item->state() == ConnectionStatus::up)) {
         Guard(pconnector->lock);
         bool wasFirst = false;
-        // Put the event on the queue
-        UpdateUaSdk *u(new UpdateUaSdk(getIncomingTimeStamp(), reason));
+        // Make a copy of the value for this element and put it on the queue
+        UpdateUaSdk *u(new UpdateUaSdk(getIncomingTimeStamp(), reason, value, getIncomingReadStatus()));
         incomingQueue.pushUpdate(std::shared_ptr<UpdateUaSdk>(u), &wasFirst);
         if (debug() >= 5)
-            std::cout << "Element " << name << " set event ("
+            std::cout << "Element " << name << " set data ("
                       << processReasonString(reason)
                       << ") for record " << pconnector->getRecordName()
                       << " (queue use " << incomingQueue.size()
                       << "/" << incomingQueue.capacity() << ")" << std::endl;
         if (wasFirst)
             pconnector->requestRecordProcessing(reason);
-    } else {
-        for (auto &it : elements) {
-            auto pelem = it.lock();
-            pelem->setIncomingEvent(reason);
-        }
     }
-}
-
-// Helper to update one data structure element from pointer to child
-bool
-DataElementUaSdk::updateDataInGenericValue (UaGenericStructureValue &value,
-                                            const int index,
-                                            std::shared_ptr<DataElementUaSdk> pelem)
-{
-    bool updated = false;
-    { // Scope of Guard G
-        Guard G(pelem->outgoingLock);
-        if (pelem->isDirty()) {
-            value.setField(index, pelem->getOutgoingData());
-            pelem->isdirty = false;
-            updated = true;
-        }
-    }
-    if (debug() >= 4) {
-        if (updated) {
-            std::cout << "Data from child element " << pelem->name
-                      << " inserted into data structure" << std::endl;
-        } else {
-            std::cout << "Data from child element " << pelem->name
-                      << " ignored (not dirty)" << std::endl;
-        }
-    }
-    return updated;
-}
-
-const UaVariant &
-DataElementUaSdk::getOutgoingData ()
-{
-    if (!isLeaf()) {
-        if (debug() >= 4)
-            std::cout << "Element " << name << " updating structured data from "
-                      << elements.size() << " child elements" << std::endl;
-
-        outgoingData = incomingData;
-        isdirty = false;
-        if (outgoingData.type() == OpcUaType_ExtensionObject) {
-            UaExtensionObject extensionObject;
-            outgoingData.toExtensionObject(extensionObject);
-
-            // Try to get the structure definition from the dictionary
-            UaStructureDefinition definition = pitem->structureDefinition(extensionObject.encodingTypeId());
-            if (!definition.isNull()) {
-                if (!definition.isUnion()) {
-                    // ExtensionObject is a structure
-                    // Decode the ExtensionObject to a UaGenericValue to provide access to the structure fields
-                    UaGenericStructureValue genericValue;
-                    genericValue.setGenericValue(extensionObject, definition);
-
-                    if (!mapped) {
-                        if (debug() >= 5)
-                            std::cout << " ** creating index-to-element map for child elements" << std::endl;
-                        for (auto &it : elements) {
-                            auto pelem = it.lock();
-                            for (int i = 0; i < definition.childrenCount(); i++) {
-                                if (pelem->name == definition.child(i).name().toUtf8()) {
-                                    elementMap.insert({i, it});
-                                    if (updateDataInGenericValue(genericValue, i, pelem))
-                                        isdirty = true;
-                                }
-                            }
-                        }
-                        if (debug() >= 5)
-                            std::cout << " ** " << elementMap.size() << "/" << elements.size()
-                                      << " child elements mapped to a "
-                                      << "structure of " << definition.childrenCount() << " elements" << std::endl;
-                        mapped = true;
-                    } else {
-                        for (auto &it : elementMap) {
-                            auto pelem = it.second.lock();
-                            if (updateDataInGenericValue(genericValue, it.first, pelem))
-                               isdirty = true;
-                        }
-                    }
-                    if (isdirty) {
-                        if (debug() >= 4)
-                            std::cout << "Encoding changed data structure to outgoingData of element " << name
-                                      << std::endl;
-                        genericValue.toExtensionObject(extensionObject);
-                        outgoingData.setExtensionObject(extensionObject, OpcUa_True);
-                    } else {
-                        if (debug() >= 4)
-                            std::cout << "Returning unchanged outgoingData of element " << name
-                                      << std::endl;
-                    }
-                }
-
-            } else
-                errlogPrintf("Cannot get a structure definition for %s - check access to type dictionary\n",
-                             extensionObject.dataTypeId().toString().toUtf8());
-        }
-    }
-    return outgoingData;
 }
 
 void
-DataElementUaSdk::dbgReadScalar (const UpdateUaSdk *upd,
-                                 const std::string &targetTypeName,
-                                 const size_t targetSize) const
+DataElementLeaf::setIncomingEvent (ProcessReason reason)
 {
-    if (isLeaf() && debug()) {
+    Guard(pconnector->lock);
+    bool wasFirst = false;
+    // Put the event on the queue
+    UpdateUaSdk *u(new UpdateUaSdk(getIncomingTimeStamp(), reason));
+    incomingQueue.pushUpdate(std::shared_ptr<UpdateUaSdk>(u), &wasFirst);
+    if (debug() >= 5)
+        std::cout << "Element " << name << " set event ("
+                  << processReasonString(reason)
+                  << ") for record " << pconnector->getRecordName()
+                  << " (queue use " << incomingQueue.size()
+                  << "/" << incomingQueue.capacity() << ")" << std::endl;
+    if (wasFirst)
+        pconnector->requestRecordProcessing(reason);
+}
+
+void
+DataElementLeaf::dbgReadScalar (const UpdateUaSdk *upd,
+                                const std::string &targetTypeName,
+                                const size_t targetSize) const
+{
+    if (debug()) {
         char time_buf[40];
         upd->getTimeStamp().strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S.%09f");
         ProcessReason reason = upd->getType();
@@ -428,57 +133,57 @@ DataElementUaSdk::dbgReadScalar (const UpdateUaSdk *upd,
 }
 
 long
-DataElementUaSdk::readScalar (epicsInt32 *value,
-                              dbCommon *prec,
-                              ProcessReason *nextReason,
-                              epicsUInt32 *statusCode,
-                              char *statusText,
-                              const epicsUInt32 statusTextLen)
+DataElementLeaf::readScalar (epicsInt32 *value,
+                             dbCommon *prec,
+                             ProcessReason *nextReason,
+                             epicsUInt32 *statusCode,
+                             char *statusText,
+                             const epicsUInt32 statusTextLen)
 {
     return readScalar<epicsInt32, OpcUa_Int32>(value, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readScalar (epicsInt64 *value,
-                              dbCommon *prec,
-                              ProcessReason *nextReason,
-                              epicsUInt32 *statusCode,
-                              char *statusText,
-                              const epicsUInt32 statusTextLen)
+DataElementLeaf::readScalar (epicsInt64 *value,
+                             dbCommon *prec,
+                             ProcessReason *nextReason,
+                             epicsUInt32 *statusCode,
+                             char *statusText,
+                             const epicsUInt32 statusTextLen)
 {
     return readScalar<epicsInt64, OpcUa_Int64>(value, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readScalar (epicsUInt32 *value,
-                              dbCommon *prec,
-                              ProcessReason *nextReason,
-                              epicsUInt32 *statusCode,
-                              char *statusText,
-                              const epicsUInt32 statusTextLen)
+DataElementLeaf::readScalar (epicsUInt32 *value,
+                             dbCommon *prec,
+                             ProcessReason *nextReason,
+                             epicsUInt32 *statusCode,
+                             char *statusText,
+                             const epicsUInt32 statusTextLen)
 {
     return readScalar<epicsUInt32, OpcUa_UInt32>(value, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readScalar (epicsFloat64 *value,
-                              dbCommon *prec,
-                              ProcessReason *nextReason,
-                              epicsUInt32 *statusCode,
-                              char *statusText,
-                              const epicsUInt32 statusTextLen)
+DataElementLeaf::readScalar (epicsFloat64 *value,
+                             dbCommon *prec,
+                             ProcessReason *nextReason,
+                             epicsUInt32 *statusCode,
+                             char *statusText,
+                             const epicsUInt32 statusTextLen)
 {
     return readScalar<epicsFloat64, OpcUa_Double>(value, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 // CString type needs specialization
 long
-DataElementUaSdk::readScalar (char *value, const size_t num,
-                              dbCommon *prec,
-                              ProcessReason *nextReason,
-                              epicsUInt32 *statusCode,
-                              char *statusText,
-                              const epicsUInt32 statusTextLen)
+DataElementLeaf::readScalar (char *value, const size_t num,
+                             dbCommon *prec,
+                             ProcessReason *nextReason,
+                             epicsUInt32 *statusCode,
+                             char *statusText,
+                             const epicsUInt32 statusTextLen)
 {
     long ret = 0;
 
@@ -536,11 +241,11 @@ DataElementUaSdk::readScalar (char *value, const size_t num,
 }
 
 void
-DataElementUaSdk::dbgReadArray (const UpdateUaSdk *upd,
-                                const epicsUInt32 targetSize,
-                                const std::string &targetTypeName) const
+DataElementLeaf::dbgReadArray (const UpdateUaSdk *upd,
+                               const epicsUInt32 targetSize,
+                               const std::string &targetTypeName) const
 {
-    if (isLeaf() && debug()) {
+    if (debug()) {
         char time_buf[40];
         upd->getTimeStamp().strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S.%09f");
         ProcessReason reason = upd->getType();
@@ -564,15 +269,15 @@ DataElementUaSdk::dbgReadArray (const UpdateUaSdk *upd,
 
 // Read array for EPICS String / OpcUa_String
 long int
-DataElementUaSdk::readArray (char **value, const epicsUInt32 len,
-                             const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             OpcUa_BuiltInType expectedType,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (char **value, const epicsUInt32 len,
+                            const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            OpcUa_BuiltInType expectedType,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     long ret = 0;
     epicsUInt32 elemsWritten = 0;
@@ -652,17 +357,17 @@ DataElementUaSdk::readArray (char **value, const epicsUInt32 len,
 
 // Specialization for epicsUInt8 / OpcUa_Byte
 //   (needed because UaByteArray API is different from all other UaXxxArray classes)
-// CAVEAT: changes in the template (in DataElementUaSdk.h) must be reflected here
+// CAVEAT: changes in the template (in DataElementLeaf.h) must be reflected here
 template<>
 long
-DataElementUaSdk::readArray<epicsUInt8, UaByteArray> (epicsUInt8 *value, const epicsUInt32 num,
-                                                      epicsUInt32 *numRead,
-                                                      OpcUa_BuiltInType expectedType,
-                                                      dbCommon *prec,
-                                                      ProcessReason *nextReason,
-                                                      epicsUInt32 *statusCode,
-                                                      char *statusText,
-                                                      const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray<epicsUInt8, UaByteArray> (epicsUInt8 *value, const epicsUInt32 num,
+                                                     epicsUInt32 *numRead,
+                                                     OpcUa_BuiltInType expectedType,
+                                                     dbCommon *prec,
+                                                     ProcessReason *nextReason,
+                                                     epicsUInt32 *statusCode,
+                                                     char *statusText,
+                                                     const epicsUInt32 statusTextLen)
 {
     long ret = 0;
     epicsUInt32 elemsWritten = 0;
@@ -739,143 +444,143 @@ DataElementUaSdk::readArray<epicsUInt8, UaByteArray> (epicsUInt8 *value, const e
 }
 
 long
-DataElementUaSdk::readArray (epicsInt8 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsInt8 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsInt8, UaSByteArray>(value, num, numRead, OpcUaType_SByte, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsUInt8 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsUInt8 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsUInt8, UaByteArray>(value, num, numRead, OpcUaType_Byte, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsInt16 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsInt16 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsInt16, UaInt16Array>(value, num, numRead, OpcUaType_Int16, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsUInt16 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsUInt16 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsUInt16, UaUInt16Array>(value, num, numRead, OpcUaType_UInt16, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsInt32 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsInt32 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsInt32, UaInt32Array>(value, num, numRead, OpcUaType_Int32, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsUInt32 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsUInt32 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsUInt32, UaUInt32Array>(value, num, numRead, OpcUaType_UInt32, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsInt64 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsInt64 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsInt64, UaInt64Array>(value, num, numRead, OpcUaType_Int64, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsUInt64 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsUInt64 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsUInt64, UaUInt64Array>(value, num, numRead, OpcUaType_UInt64, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsFloat32 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsFloat32 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsFloat32, UaFloatArray>(value, num, numRead, OpcUaType_Float, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (epicsFloat64 *value, const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (epicsFloat64 *value, const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray<epicsFloat64, UaDoubleArray>(value, num, numRead, OpcUaType_Double, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 long
-DataElementUaSdk::readArray (char *value, const epicsUInt32 len,
-                             const epicsUInt32 num,
-                             epicsUInt32 *numRead,
-                             dbCommon *prec,
-                             ProcessReason *nextReason,
-                             epicsUInt32 *statusCode,
-                             char *statusText,
-                             const epicsUInt32 statusTextLen)
+DataElementLeaf::readArray (char *value, const epicsUInt32 len,
+                            const epicsUInt32 num,
+                            epicsUInt32 *numRead,
+                            dbCommon *prec,
+                            ProcessReason *nextReason,
+                            epicsUInt32 *statusCode,
+                            char *statusText,
+                            const epicsUInt32 statusTextLen)
 {
     return readArray(&value, len, num, numRead, OpcUaType_String, prec, nextReason, statusCode, statusText, statusTextLen);
 }
 
 inline
 void
-DataElementUaSdk::dbgWriteScalar () const
+DataElementLeaf::dbgWriteScalar () const
 {
-    if (isLeaf() && debug()) {
+    if (debug()) {
         std::cout << pconnector->getRecordName() << ": set outgoing data ("
                   << variantTypeString(outgoingData.type()) << ") to value ";
         if (outgoingData.type() == OpcUaType_String)
@@ -887,31 +592,31 @@ DataElementUaSdk::dbgWriteScalar () const
 }
 
 long
-DataElementUaSdk::writeScalar (const epicsInt32 &value, dbCommon *prec)
+DataElementLeaf::writeScalar (const epicsInt32 &value, dbCommon *prec)
 {
     return writeScalar<epicsInt32>(value, prec);
 }
 
 long
-DataElementUaSdk::writeScalar (const epicsUInt32 &value, dbCommon *prec)
+DataElementLeaf::writeScalar (const epicsUInt32 &value, dbCommon *prec)
 {
     return writeScalar<epicsUInt32>(value, prec);
 }
 
 long
-DataElementUaSdk::writeScalar (const epicsInt64 &value, dbCommon *prec)
+DataElementLeaf::writeScalar (const epicsInt64 &value, dbCommon *prec)
 {
     return writeScalar<epicsInt64>(value, prec);
 }
 
 long
-DataElementUaSdk::writeScalar (const epicsFloat64 &value, dbCommon *prec)
+DataElementLeaf::writeScalar (const epicsFloat64 &value, dbCommon *prec)
 {
     return writeScalar<epicsFloat64>(value, prec);
 }
 
 long
-DataElementUaSdk::writeScalar (const char *value, const epicsUInt32 len, dbCommon *prec)
+DataElementLeaf::writeScalar (const char *value, const epicsUInt32 len, dbCommon *prec)
 {
     long ret = 0;
     long l;
@@ -1055,9 +760,9 @@ DataElementUaSdk::writeScalar (const char *value, const epicsUInt32 len, dbCommo
 
 inline
 void
-DataElementUaSdk::dbgWriteArray (const epicsUInt32 targetSize, const std::string &targetTypeName) const
+DataElementLeaf::dbgWriteArray (const epicsUInt32 targetSize, const std::string &targetTypeName) const
 {
-    if (isLeaf() && debug()) {
+    if (debug()) {
         std::cout << pconnector->getRecordName() << ": writing array of "
                   << targetTypeName << "[" << targetSize << "] as "
                   << variantTypeString(outgoingData.type()) << "["<< outgoingData.arraySize() << "]"
@@ -1067,10 +772,10 @@ DataElementUaSdk::dbgWriteArray (const epicsUInt32 targetSize, const std::string
 
 // Write array for EPICS String / OpcUa_String
 long
-DataElementUaSdk::writeArray (const char **value, const epicsUInt32 len,
-                              const epicsUInt32 num,
-                              OpcUa_BuiltInType targetType,
-                              dbCommon *prec)
+DataElementLeaf::writeArray (const char **value, const epicsUInt32 len,
+                             const epicsUInt32 num,
+                             OpcUa_BuiltInType targetType,
+                             dbCommon *prec)
 {
     long ret = 0;
 
@@ -1117,12 +822,12 @@ DataElementUaSdk::writeArray (const char **value, const epicsUInt32 len,
 
 // Specialization for epicsUInt8 / OpcUa_Byte
 //   (needed because UaByteArray API is different from all other UaXxxArray classes)
-// CAVEAT: changes in the template (in DataElementUaSdk.h) must be reflected here
+// CAVEAT: changes in the template (in DataElementLeaf.h) must be reflected here
 template<>
 long
-DataElementUaSdk::writeArray<epicsUInt8, UaByteArray, OpcUa_Byte> (const epicsUInt8 *value, const epicsUInt32 num,
-                                                                   OpcUa_BuiltInType targetType,
-                                                                   dbCommon *prec)
+DataElementLeaf::writeArray<epicsUInt8, UaByteArray, OpcUa_Byte> (const epicsUInt8 *value, const epicsUInt32 num,
+                                                                  OpcUa_BuiltInType targetType,
+                                                                  dbCommon *prec)
 {
     long ret = 0;
 
@@ -1152,82 +857,75 @@ DataElementUaSdk::writeArray<epicsUInt8, UaByteArray, OpcUa_Byte> (const epicsUI
 }
 
 long
-DataElementUaSdk::writeArray (const epicsInt8 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsInt8 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsInt8, UaSByteArray, OpcUa_SByte>(value, num, OpcUaType_SByte, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsUInt8 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsUInt8 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsUInt8, UaByteArray, OpcUa_Byte>(value, num, OpcUaType_Byte, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsInt16 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsInt16 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsInt16, UaInt16Array, OpcUa_Int16>(value, num, OpcUaType_Int16, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsUInt16 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsUInt16 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsUInt16, UaUInt16Array, OpcUa_UInt16>(value, num, OpcUaType_UInt16, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsInt32 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsInt32 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsInt32, UaInt32Array, OpcUa_Int32>(value, num, OpcUaType_Int32, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsUInt32 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsUInt32 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsUInt32, UaUInt32Array, OpcUa_UInt32>(value, num, OpcUaType_UInt32, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsInt64 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsInt64 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsInt64, UaInt64Array, OpcUa_Int64>(value, num, OpcUaType_Int64, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsUInt64 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsUInt64 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsUInt64, UaUInt64Array, OpcUa_UInt64>(value, num, OpcUaType_UInt64, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsFloat32 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsFloat32 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsFloat32, UaFloatArray, OpcUa_Float>(value, num, OpcUaType_Float, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const epicsFloat64 *value, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const epicsFloat64 *value, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray<epicsFloat64, UaDoubleArray, OpcUa_Double>(value, num, OpcUaType_Double, prec);
 }
 
 long
-DataElementUaSdk::writeArray (const char *value, const epicsUInt32 len, const epicsUInt32 num, dbCommon *prec)
+DataElementLeaf::writeArray (const char *value, const epicsUInt32 len, const epicsUInt32 num, dbCommon *prec)
 {
     return writeArray(&value, len, num, OpcUaType_String, prec);
 }
 
 void
-DataElementUaSdk::requestRecordProcessing (const ProcessReason reason) const
+DataElementLeaf::requestRecordProcessing (const ProcessReason reason) const
 {
-    if (isLeaf()) {
-        pconnector->requestRecordProcessing(reason);
-    } else {
-        for (auto &it : elementMap) {
-            auto pelem = it.second.lock();
-            pelem->requestRecordProcessing(reason);
-        }
-    }
+    pconnector->requestRecordProcessing(reason);
 }
 
 } // namespace DevOpcua

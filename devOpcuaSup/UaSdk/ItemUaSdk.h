@@ -42,7 +42,7 @@ struct linkInfo;
  */
 class ItemUaSdk : public Item
 {
-    friend class DataElementUaSdk;
+    friend class DataElementLeaf;
 
 public:
     /**

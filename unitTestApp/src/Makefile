@@ -24,6 +24,10 @@ GTESTPROD_HOST += RequestQueueBatcherTest
 RequestQueueBatcherTest_SRCS += RequestQueueBatcherTest.cpp
 GTESTS += RequestQueueBatcherTest
 
+GTESTPROD_HOST += ElementTreeHelperTest
+RequestQueueBatcherTest_SRCS += ElementTreeHelperTest.cpp
+GTESTS += ElementTreeHelperTest
+
 #==================================================
 # Tests for different client libraries
 # are in separate directories, added by reading

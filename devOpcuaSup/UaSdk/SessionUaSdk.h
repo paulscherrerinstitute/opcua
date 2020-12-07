@@ -75,8 +75,7 @@ public:
      * @param clientPrivateKey   path to client-side private key
      */
     SessionUaSdk(const std::string &name, const std::string &serverUrl,
-                 bool autoConnect = true, int debug = 0, epicsUInt32 batchNodes = 0,
-                 const char *clientCertificate = nullptr, const char *clientPrivateKey = nullptr);
+                 bool autoConnect = true, int debug = 0);
     ~SessionUaSdk() override;
 
     /**

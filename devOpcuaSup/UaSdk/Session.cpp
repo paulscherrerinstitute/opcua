@@ -125,4 +125,6 @@ std::string Session::securityIssuersRevocationListDir;
 std::string Session::securityClientCertificateFile;
 std::string Session::securityClientPrivateKeyFile;
 
+epicsTimerQueueActive &Session::queue = epicsTimerQueueActive::allocate(true);
+
 } // namespace DevOpcua

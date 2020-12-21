@@ -259,6 +259,26 @@ void opcuaShowSessionCallFunc (const iocshArgBuf *args)
     }
 }
 
+static const iocshArg opcuaShowSecurityArg0 = {"session name [\"\"=all]", iocshArgString};
+
+static const iocshArg *const opcuaShowSecurityArg[1] = {&opcuaShowSecurityArg0};
+
+static const iocshFuncDef opcuaShowSecurityFuncDef = {"opcuaShowSecurity", 1, opcuaShowSecurityArg};
+
+static
+void opcuaShowSecurityCallFunc (const iocshArgBuf *args)
+{
+    try {
+        if (args[0].sval == nullptr || args[0].sval[0] == '\0')
+            Session::showSecurityClient();
+        else
+            Session::findSession(args[0].sval).showSecurity();
+    }
+    catch (std::exception &e) {
+        std::cerr << "ERROR : " << e.what() << std::endl;
+    }
+}
+
 static const iocshArg opcuaClientCertificateArg0 = {"certificate (public key) file", iocshArgString};
 static const iocshArg opcuaClientCertificateArg1 = {"private key file", iocshArgString};
 
@@ -534,6 +554,7 @@ void opcuaIocshRegister ()
     iocshRegister(&opcuaConnectFuncDef, opcuaConnectCallFunc);
     iocshRegister(&opcuaDisconnectFuncDef, opcuaDisconnectCallFunc);
     iocshRegister(&opcuaShowSessionFuncDef, opcuaShowSessionCallFunc);
+    iocshRegister(&opcuaShowSecurityFuncDef, opcuaShowSecurityCallFunc);
     iocshRegister(&opcuaClientCertificateFuncDef, opcuaClientCertificateCallFunc);
     iocshRegister(&opcuaSetupPKIFuncDef, opcuaSetupPKICallFunc);
     iocshRegister(&opcuaDebugSessionFuncDef, opcuaDebugSessionCallFunc);

@@ -275,6 +275,13 @@ private:
                          , cantConnect
                          , noMatchingEndpoint
                        };
+    const char *connectResultString(const ConnectResult result);
+
+    /**
+     * @brief Mark connection loss: clear request queues and process records.
+     */
+    void markConnectionLoss();
+
     /**
      * @brief Set up security.
      *
@@ -289,7 +296,6 @@ private:
 
     const std::string name;                                   /**< unique session name */
     UaString serverURL;                                       /**< server URL */
-    bool autoConnect;                                         /**< auto (re)connect flag */
     std::map<std::string, SubscriptionUaSdk*> subscriptions;  /**< subscriptions on this session */
     std::vector<ItemUaSdk *> items;                           /**< items on this session */
     OpcUa_UInt32 registeredItemsNo;                           /**< number of registered items */
@@ -298,6 +304,7 @@ private:
     UaSession* puasession;                                    /**< pointer to low level session */
     SessionConnectInfo connectInfo;                           /**< connection metadata */
     SessionSecurityInfo securityInfo;                         /**< security metadata */
+    unsigned char securityLevel;                              /**< actual security level */
     OpcUa_MessageSecurityMode reqSecurityMode;                /**< requested security mode */
     UaString reqSecurityPolicyURI;                            /**< requested security policy */
     unsigned char reqSecurityLevel;                           /**< requested security level */

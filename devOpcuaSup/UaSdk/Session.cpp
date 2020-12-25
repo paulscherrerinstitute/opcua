@@ -103,10 +103,11 @@ void
 Session::showOptionHelp ()
 {
     std::cout << "Options:\n"
-              << "clientcert   path to client certificate [none]\n"
-              << "clientkey    path to client private key [none]\n"
-              << "batch-nodes  max. nodes per service call [0 = no limit]"
-              << std::endl;
+              << "sec-mode     requested security mode\n"
+              << "sec-policy   requested security policy\n"
+              << "sec-level    requested minimal security level\n"
+              << "ident-file   file to read identity credentials from\n"
+              << "batch-nodes  max. nodes per service call [0 = no limit]" << std::endl;
 }
 
 const std::string &

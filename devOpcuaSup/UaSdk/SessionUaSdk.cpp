@@ -30,6 +30,7 @@
 #include <uasession.h>
 #include <uadiscovery.h>
 #include <uapkicertificate.h>
+#include <uapkirsakeypair.h>
 
 #include <epicsExit.h>
 #include <epicsThread.h>
@@ -653,6 +654,8 @@ SessionUaSdk::showSecurity ()
         return;
     }
 
+    setupIdentity();
+
     for (OpcUa_UInt32 i = 0; i < applicationDescriptions.length(); i++) {
         for (OpcUa_Int32 j = 0; j < applicationDescriptions[i].NoOfDiscoveryUrls; j++) {
             std::cout << "Session " << name << "    (discovery at " << serverURL.toUtf8() << ")"
@@ -663,14 +666,17 @@ SessionUaSdk::showSecurity ()
                 std::cout << "    (using " << serverURL.toUtf8() << ")";
             std::cout << "\n  Requested Mode: " << securityModeString(reqSecurityMode)
                       << "    Policy: " << securityPolicyString(reqSecurityPolicyURI)
-                      << "    Level: " << +reqSecurityLevel;
-            if (securityCredentialFile.length()) {
-                readCredentials();
-                std::cout << "\n  Identity: Username '" << securityUserName
-                          << "' (credentials from " << securityCredentialFile << ")";
-            } else {
-                std::cout << "\n  Identity: Anonymous";
-            }
+                      << "    Level: " << +reqSecurityLevel
+                      << "\n  Identity: ";
+            if (securityInfo.pUserIdentityToken()->getTokenType() == OpcUa_UserTokenType_UserName)
+                std::cout << "Username token '" << securityUserName << "'"
+                          << " (credentials from " << securityCredentialFile << ")";
+            else if (securityInfo.pUserIdentityToken()->getTokenType() == OpcUa_UserTokenType_Certificate)
+                std::cout << "Certificate token '" << securityUserName << "'"
+                          << " (credentials from " << securityCredentialFile << ")";
+            else
+                std::cout << "Anonymous";
+
             if (std::string(serverURL.toUtf8()).compare(0, 7, "opc.tcp") == 0) {
                 UaEndpointDescriptions endpointDescriptions;
                 status = discovery.getEndpoints(serviceSettings, serverURL, securityInfo, endpointDescriptions);
@@ -744,7 +750,7 @@ SessionUaSdk::setupSecurity ()
         return ConnectResult::ok;
 
     } else {
-        readCredentials();
+        setupIdentity();
         if (std::string(serverURL.toUtf8()).compare(0, 7, "opc.tcp") == 0) {
             UaEndpointDescriptions endpointDescriptions;
             if (debug)
@@ -927,7 +933,7 @@ SessionUaSdk::markConnectionLoss()
 }
 
 void
-SessionUaSdk::readCredentials()
+SessionUaSdk::setupIdentity()
 {
     securityInfo.setAnonymousUserIdentity();
 
@@ -935,6 +941,8 @@ SessionUaSdk::readCredentials()
         std::ifstream inFile;
         std::string line;
         std::string user;
+        std::string certfile;
+        std::string keyfile;
         std::string pass;
 
         inFile.open(securityCredentialFile);
@@ -945,14 +953,18 @@ SessionUaSdk::readCredentials()
         }
 
         while (std::getline(inFile, line)) {
-            if (line[0] != '#') {
-                size_t pos = line.find_first_of('=');
-                if (pos != std::string::npos) {
-                    if (line.substr(0, pos) == "user") {
-                        user = line.substr(pos + 1, std::string::npos);
-                    } else if (line.substr(0, pos) == "pass") {
-                        pass = line.substr(pos + 1, std::string::npos);
-                    }
+            size_t hash = line.find_first_of('#');
+            size_t equ = line.find_first_of('=');
+            if (hash < equ) continue;
+            if (equ != std::string::npos) {
+                if (line.substr(0, equ) == "user") {
+                    user = line.substr(equ + 1, std::string::npos);
+                } else if (line.substr(0, equ) == "pass") {
+                    pass = line.substr(equ + 1, std::string::npos);
+                } else if (line.substr(0, equ) == "cert") {
+                    certfile = line.substr(equ + 1, std::string::npos);
+                } else if (line.substr(0, equ) == "key") {
+                    keyfile = line.substr(equ + 1, std::string::npos);
                 }
             }
         }
@@ -960,10 +972,17 @@ SessionUaSdk::readCredentials()
         if (user.length() && pass.length()) {
             securityUserName = user;
             securityInfo.setUserPasswordUserIdentity(user.c_str(), pass.c_str());
+        } else if (certfile.length() && keyfile.length()) {
+            UaPkiCertificate cert = UaPkiCertificate::fromDERFile(certfile.c_str());
+            UaPkiRsaKeyPair key = UaPkiRsaKeyPair::fromPEMFile(keyfile.c_str(), pass.c_str());
+            securityUserName = cert.commonName().toUtf8();
+            securityInfo.setCertificateUserIdentity(cert.toByteStringDER(), key.toDER());
         } else {
-            errlogPrintf("OPC UA session %s: credentials file %s does not contain settings for user and pass\n",
-                         name.c_str(),
-                         securityCredentialFile.c_str());
+            errlogPrintf(
+                "OPC UA session %s: credentials file %s does not contain settings for "
+                "Username token (user + pass) or Certificate token (cert + key [+ pass])\n",
+                name.c_str(),
+                securityCredentialFile.c_str());
         }
     }
 }

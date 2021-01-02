@@ -1,5 +1,5 @@
 /*************************************************************************\
-* Copyright (c) 2018-2019 ITER Organization.
+* Copyright (c) 2018-2021 ITER Organization.
 * This module is distributed subject to a Software License Agreement found
 * in file LICENSE that is included with this distribution.
 \*************************************************************************/
@@ -259,7 +259,7 @@ void opcuaShowSessionCallFunc (const iocshArgBuf *args)
     }
 }
 
-static const iocshArg opcuaShowSecurityArg0 = {"session name [\"\"=all]", iocshArgString};
+static const iocshArg opcuaShowSecurityArg0 = {"session name [\"\"=client]", iocshArgString};
 
 static const iocshArg *const opcuaShowSecurityArg[1] = {&opcuaShowSecurityArg0};
 

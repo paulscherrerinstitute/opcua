@@ -1,5 +1,5 @@
 /*************************************************************************\
-* Copyright (c) 2018-2020 ITER Organization.
+* Copyright (c) 2018-2021 ITER Organization.
 * This module is distributed subject to a Software License Agreement found
 * in file LICENSE that is included with this distribution.
 \*************************************************************************/
@@ -12,12 +12,15 @@
 
 #include <iostream>
 #include <map>
+#include <fstream>
+#include <cstdio>
 
 #include <uaplatformlayer.h>
 #include <uabase.h>
 #include <uapkicertificate.h>
 
 #include <epicsThread.h>
+#include <errlog.h>
 
 #include "Session.h"
 #include "SessionUaSdk.h"
@@ -34,6 +37,30 @@ void opcuaUaSdk_init (void *junk)
 {
     (void)junk;
     UaPlatformLayer::init();
+}
+
+static bool
+isWritable(const std::string &dir)
+{
+    char filename[L_tmpnam];
+    std::tmpnam(filename);
+    std::string uniqname(filename);
+    bool writable = false;
+
+    std::string testfile = dir;
+    if (testfile.back() == '/')
+        testfile.pop_back();
+
+    size_t pos = uniqname.find_last_of('/');
+    testfile.append(uniqname, pos, uniqname.length() - pos);
+
+    std::ofstream file(testfile);
+    if ((file.rdstate() & std::fstream::failbit) == 0) {
+        writable = true;
+        file.close();
+        remove(testfile.c_str());
+    }
+    return writable;
 }
 
 void
@@ -127,6 +154,29 @@ Session::showOptionHelp ()
               << "sec-level    requested minimal security level\n"
               << "ident-file   file to read identity credentials from\n"
               << "batch-nodes  max. nodes per service call [0 = no limit]" << std::endl;
+}
+
+void
+Session::setupPKI(const std::string &&certTrustList,
+                  const std::string &&certRevocationList,
+                  const std::string &&issuersTrustList,
+                  const std::string &&issuersRevocationList)
+{
+    securityCertificateTrustListDir = std::move(certTrustList);
+    securityCertificateRevocationListDir = std::move(certRevocationList);
+    securityIssuersCertificatesDir = std::move(issuersTrustList);
+    securityIssuersRevocationListDir = std::move(issuersRevocationList);
+
+    const std::string format(
+        "OPC UA: Warning - a PKI directory is writable, which may compromise security. (%s)\n");
+    if (isWritable(securityCertificateTrustListDir))
+        errlogPrintf(format.c_str(), securityCertificateTrustListDir.c_str());
+    if (isWritable(securityCertificateRevocationListDir))
+        errlogPrintf(format.c_str(), securityCertificateRevocationListDir.c_str());
+    if (isWritable(securityIssuersCertificatesDir))
+        errlogPrintf(format.c_str(), securityIssuersCertificatesDir.c_str());
+    if (isWritable(securityIssuersRevocationListDir))
+        errlogPrintf(format.c_str(), securityIssuersRevocationListDir.c_str());
 }
 
 const std::string &

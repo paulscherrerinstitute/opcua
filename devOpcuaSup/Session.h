@@ -1,5 +1,5 @@
 /*************************************************************************\
-* Copyright (c) 2018 ITER Organization.
+* Copyright (c) 2018-2021 ITER Organization.
 * This module is distributed subject to a Software License Agreement found
 * in file LICENSE that is included with this distribution.
 \*************************************************************************/
@@ -203,13 +203,7 @@ public:
     static void setupPKI(const std::string &&certTrustList,
                          const std::string &&certRevocationList,
                          const std::string &&issuersTrustList,
-                         const std::string &&issuersRevocationList)
-    {
-        securityCertificateTrustListDir = std::move(certTrustList);
-        securityCertificateRevocationListDir = std::move(certRevocationList);
-        securityIssuersCertificatesDir = std::move(issuersTrustList);
-        securityIssuersRevocationListDir = std::move(issuersRevocationList);
-    }
+                         const std::string &&issuersRevocationList);
 
     int debug;  /**< debug verbosity level */
 
